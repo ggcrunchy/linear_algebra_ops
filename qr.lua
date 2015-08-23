@@ -24,6 +24,7 @@
 --
 
 -- Standard library imports --
+local floor = math.floor
 local sqrt = math.sqrt
 
 -- Modules --
@@ -39,8 +40,52 @@ local Scale = matrix_mn.Scale
 local Sub = matrix_mn.Sub
 local Transpose = matrix_mn.Transpose
 
+-- Cached module references --
+local _BlockQR_
+local _Multiply_TranposeHouseholder_
+local _ThinQR_HouseholderColumns_
+
 -- Exports --
 local M = {}
+
+--
+local function AuxBlockQR (A, col, n, nb, out)
+	if n <= nb then
+		_ThinQR_HouseholderColumns_(A, col, n, out)
+	else
+		local n1 = floor(.5 * n)
+
+		AuxBlockQR(A, 1, n1, nb, out)
+		-- [Q1, R11] = BlockQR(A(:, 1:n1), n1, nb)
+
+--		_Multiply_TranposeHouseholder_(Q1, A, R12)
+		-- R12 = Q1^T * A(:, n1 + 1:n)
+
+		-- A(:, n1 + 1:n) = A(:, n1 + 1:n) - Q1 * R12
+		-- [Q2, R22] = BlockQR(A(:, n1 + 1:n), n - n1, nb)
+		-- Q = [Q1|Q2], R = [R11 R12]
+		--					[  0 R22]
+	end
+end
+
+--
+local function AuxOut (A, out)
+	if out then
+		out:Resize(A:GetDims())
+
+		return out
+	else
+		return A
+	end
+end
+
+--- DOCME
+-- @tparam MatrixMN A
+-- @uint nb
+-- @tparam[opt=A] MatrixMN out
+function M.BlockQR (A, nb, out)
+	AuxBlockQR(A, 1, A:GetColumnCount(), nb, AuxOut(A, out))
+end
 
 --
 local function House (x)
@@ -78,38 +123,29 @@ local function House (x)
 end
 
 --- DOCME
--- @tparam A (inout)
-function M.HouseQR (A)
-	local nrows, ncols = A.m_rows, A.m_cols
-
-	for j = 1, ncols do
-		local h = A:GetColumn(j, j)
-		local v, beta = House(h)
-
-		PutBlock(A, j, j, Mul(Sub(Identity(#v), Scale(OuterProduct(v, v), beta)), Corner(A, j, j)))
-
-		for offset = 1, nrows - j do
-			A:Set(j + offset, j, v[offset + 1])
-		end
-	end
+-- @tparam MatrixMN A (inout)
+-- @tparam[opt=A] MatrixMN out
+function M.HouseQR (A, out)
+	_ThinQR_HouseholderColumns_(A, 1, A:GetColumnCount(), out)
 end
 
 --- DOCME (5.1.5 in Golub and van Loan)
 -- @tparam MatrixMN A
 -- @uint k
 -- @treturn MatrixMN E
-function M.FindQ_House (A, k)
-	local nrows, ncols = A.m_rows, A.m_cols
+function M.FindQ_House (A, k) -- rename: HouseholderToQ, add *ToQR variant...
+	local nrows, ncols = A:GetDims()
 	local Q = matrix_mn.Columns(Identity(nrows), 1, k)
 
 	for j = ncols, 1, -1 do
-		local V = matrix_mn.New(nrows - j + 1, 1)
+		local vrows = nrows - j + 1
+		local V = matrix_mn.New(vrows, 1)
 
 		V[#V + 1] = 1
 
 		local dot, dr = 0, j - 1
 
-		for r = 2, V.m_rows do
+		for r = 2, vrows do
 			local v = A(r + dr, j)
 
 			V[r], dot = v, dot + v^2
@@ -126,36 +162,100 @@ function M.FindQ_House (A, k)
 end
 
 --- DOCME (mod. Gram-Schmidt)
--- @tparam MatrixMN M
+-- @tparam MatrixMN A
 -- @tparam MatrixMN Q
 -- @tparam MatrixMN R
 -- @uint[opt] ncols
-function M.Find_MGS (M, Q, R, ncols)
-	ncols = ncols or M.m_cols
+function M.Find_MGS (A, Q, R, ncols)
+	ncols = ncols or A:GetColumnCount()
 
-	local nrows = M.m_rows
+	local nrows = A:GetRowCount()
 
 	for k = 1, ncols do
-		local len = M:ColumnLength(k)
+		local len = A:ColumnLength(k)
 
 		R:Set(k, k, len)
 
 		for r = 1, nrows do
-			Q:Set(r, k, M(r, k) / len)
+			Q:Set(r, k, A(r, k) / len)
 		end
 
 		for j = k + 1, ncols do
 			local dot = 0
 
 			for r = 1, nrows do
-				dot = dot + Q(r, k) * M(r, j)
+				dot = dot + Q(r, k) * A(r, j)
 			end
 
 			R:Set(k, j, dot)
 
 			for r = 1, nrows do
-				M:Set(r, j, M(r, j) - Q(r, k) * R(k, j))
+				A:Update(r, j, -Q(r, k) * R(k, j))
 			end
+		end
+	end
+end
+
+--- DOCME
+function M.Multiply_TranposeHouseholder (H, C, out)
+	out = AuxOut(C, out)
+
+	for j = 1, C:GetColumnCount() do
+		local col = H:GetColumn(j, j + 1)
+table.insert(col, 1, 1)
+		local n, sum = #col, 0
+		local V = matrix_mn.New(1, n)
+
+		for i = 1, n do
+			V[i], sum = col[i], sum + col[i]^2
+		end
+
+		local beta = 2 / sum
+
+		for i = 1, n do
+			col[i] = col[i] * beta
+		end
+
+		local old_corner = Corner(C, j, 1)
+
+		PutBlock(C, j, 1, Sub(old_corner, OuterProduct(col, Mul(V, old_corner))))
+	end
+end
+-- ^^^ TODO: Columns variant...
+
+--- DOCME
+-- @tparam MatrixMN A
+-- @tparam Vector X
+-- @tparam Vector B
+-- @uint nb
+-- @tparam[opt=A] MatrixMN out
+function M.Solve_Householder (A, X, B, nb, out)
+	_BlockQR_(A, nb, out)
+
+	-- Back-sub!
+	-- Q^t*XX
+end
+
+--- DOCME
+-- @tparam MatrixMN A (inout)
+-- @uint col
+-- @uint n
+-- @tparam[opt=A] MatrixMN out
+function M.ThinQR_HouseholderColumns (A, col, n, out)
+	out = AuxOut(A, out)
+
+	--
+	local dc, nrows = col - 1, A:GetRowCount()
+
+	for j = 1, n do
+		local ci = j + dc
+		local h = A:GetColumn(ci, j)
+		local v, beta = House(h)
+
+		PutBlock(out, ci, j, Mul(Sub(Identity(#v), Scale(OuterProduct(v, v), beta)), Corner(A, ci, j)))
+
+		for offset = 1, nrows - j do
+			out:Set(j + offset, ci, v[offset + 1])
 		end
 	end
 end
@@ -189,6 +289,11 @@ end
 -- BlockQR...
 -- Can we avoid the FindQ_House() step? (Need a lower-triangular transpose multiply...)
 ]]
+
+-- Cache module members.
+_BlockQR_ = M.BlockQR
+_Multiply_TranposeHouseholder_ = M.Multiply_TranposeHouseholder
+_ThinQR_HouseholderColumns_ = M.ThinQR_HouseholderColumns
 
 -- Export the module.
 return M
