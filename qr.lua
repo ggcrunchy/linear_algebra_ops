@@ -25,6 +25,7 @@
 
 -- Standard library imports --
 local floor = math.floor
+local remove = table.remove
 local sqrt = math.sqrt
 
 -- Modules --
@@ -47,6 +48,22 @@ local _ThinQR_HouseholderColumns_
 
 -- Exports --
 local M = {}
+
+-- --
+local Cache = {}
+
+--
+local function GetMatrix ()
+	return remove(Cache) or matrix_mn.New(1, 1)
+end
+
+--
+local function Recache (a, b, c, d)
+	Cache[#Cache + 1] = a
+	Cache[#Cache + 1] = b
+	Cache[#Cache + 1] = c
+	Cache[#Cache + 1] = d
+end
 
 --
 local function AuxBlockQR (A, col, n, nb, out)
@@ -196,30 +213,42 @@ function M.Find_MGS (A, Q, R, ncols)
 	end
 end
 
+-- --
+local ColumnOpts = { to = 2 }
+
 --- DOCME
 function M.Multiply_TranposeHouseholder (H, C, out)
 	out = AuxOut(C, out)
 
+	--
+	local corner, vc, v, op = GetMatrix(), GetMatrix(), GetMatrix(), GetMatrix()
+
+	ColumnOpts.out = v
+
 	for j = 1, C:GetColumnCount() do
-		local col = H:GetColumn(j, j + 1)
-table.insert(col, 1, 1)
-		local n, sum = #col, 0
-		local V = matrix_mn.New(1, n)
+		--
+		ColumnOpts.from = j + 1
 
-		for i = 1, n do
-			V[i], sum = col[i], sum + col[i]^2
-		end
+		H:GetColumn(j, ColumnOpts)
+		v:Set(1, 1, 1)
 
-		local beta = 2 / sum
+		--
+		Corner(C, j, 1, corner)
+		Transpose(v, v)
+		Mul(v, corner, vc)
 
-		for i = 1, n do
-			col[i] = col[i] * beta
-		end
+		--
+		Transpose(v, v)
+		Scale(v, 2 / matrix_mn.FrobeniusNormSquared(v), v)
+		PutBlock(out, j, 1, Sub(corner, OuterProduct(v, vc, op), corner))
 
-		local old_corner = Corner(C, j, 1)
-
-		PutBlock(C, j, 1, Sub(old_corner, OuterProduct(col, Mul(V, old_corner))))
+		--
+		C = out
 	end
+
+	Recache(corner, vc, v, op)
+
+	ColumnOpts.out = nil
 end
 -- ^^^ TODO: Columns variant...
 
