@@ -105,18 +105,26 @@ function M.BlockQR (A, nb, out)
 end
 
 --
-local function House (x)
-	local v, sigma, x1, n, beta = { 1 }, 0, x[1], #x
+local function House (x, v)
+	--
+	local sigma, n = 0, x:GetRowCount()
+
+	matrix_mn.Resize(v, 1, n)
 
 	for i = 2, n do
-		sigma = sigma + x[i]^2
+		sigma = sigma + x(i, 1)^2
 	end
+
+	--
+	local x1, beta = x(1, 1)
+
+	v:Set(1, 1, 1)
 
 	if sigma == 0 then
 		beta = x1 >= 0 and 0 or -2
 
 		for i = 2, n do
-			v[i] = 0
+			v:Set(1, i, 0)
 		end
 	else
 		local mu, v1 = sqrt(x1^2 + sigma)
@@ -132,11 +140,11 @@ local function House (x)
 		beta = 2 * v1sq / (sigma + v1sq)
 
 		for i = 2, n do
-			v[i] = x[i] / v1
+			v:Set(1, i, x(i, 1) / v1)
 		end
 	end
 
-	return v, beta
+	return beta
 end
 
 --- DOCME
@@ -169,7 +177,7 @@ function M.FindQ_House (A, k) -- rename: HouseholderToQ, add *ToQR variant...
 		end
 
 		local beta = 2 / (1 + dot)
-		local corner = Corner(Q, j, j)
+		local corner = matrix_mn.Columns_From(Q, j, k, j)
 		local new_corner = Sub(corner, Mul(Scale(V, beta), Mul(Transpose(V), corner)))
 
 		PutBlock(Q, j, j, new_corner)
@@ -214,7 +222,7 @@ function M.Find_MGS (A, Q, R, ncols)
 end
 
 -- --
-local ColumnOpts = { to = 2 }
+local ColumnOpts = {}
 
 --- DOCME
 function M.Multiply_TranposeHouseholder (H, C, out)
@@ -223,7 +231,7 @@ function M.Multiply_TranposeHouseholder (H, C, out)
 	--
 	local corner, vc, v, op = GetMatrix(), GetMatrix(), GetMatrix(), GetMatrix()
 
-	ColumnOpts.out = v
+	ColumnOpts.out, ColumnOpts.to = v, 2
 
 	for j = 1, C:GetColumnCount() do
 		--
@@ -259,10 +267,22 @@ end
 -- @uint nb
 -- @tparam[opt=A] MatrixMN out
 function M.Solve_Householder (A, X, B, nb, out)
-	_BlockQR_(A, nb, out)
+--	_BlockQR_(A, nb, out)
+local nrows, ncols = A:GetDims()
 
-	-- Back-sub!
-	-- Q^t*XX
+-- TODO: Use BlockQR!
+local Q = matrix_mn.New(nrows, ncols)
+local R = matrix_mn.Zero(nrows, ncols)
+M.Find_MGS(A, Q, R, ncols)
+-- /TODO
+
+	local qt, bm = GetMatrix(), GetMatrix()
+
+	B = Mul(Transpose(Q, qt), B, bm)
+
+	matrix_mn.BackSubstitute(R, B, X)
+
+	Recache(qt, bm)
 end
 
 --- DOCME
@@ -274,19 +294,46 @@ function M.ThinQR_HouseholderColumns (A, col, n, out)
 	out = AuxOut(A, out)
 
 	--
+	local corner, vc, h, op = GetMatrix(), GetMatrix(), GetMatrix(), GetMatrix()
+	local v, sv = GetMatrix(), GetMatrix()
+
+	ColumnOpts.out, ColumnOpts.to = h
+
+	--
 	local dc, nrows = col - 1, A:GetRowCount()
 
 	for j = 1, n do
 		local ci = j + dc
-		local h = A:GetColumn(ci, j)
-		local v, beta = House(h)
 
-		PutBlock(out, ci, j, Mul(Sub(Identity(#v), Scale(OuterProduct(v, v), beta)), Corner(A, ci, j)))
+		--
+		ColumnOpts.from = j
 
+		A:GetColumn(ci, ColumnOpts)
+
+		local beta = House(h, v)
+
+		--
+		Corner(A, ci, j, corner)
+		Mul(v, corner, vc)
+
+		--
+		Transpose(v, v)
+		Scale(v, beta, sv)
+		PutBlock(out, ci, j, Sub(corner, OuterProduct(sv, vc, op), corner))
+
+		--
 		for offset = 1, nrows - j do
 			out:Set(j + offset, ci, v[offset + 1])
 		end
+
+		--
+		A = out
 	end
+
+	Recache(corner, vc, h, op)
+	Recache(v, sv)
+
+	ColumnOpts.out = nil
 end
 
 --[[
