@@ -25,10 +25,10 @@
 
 -- Standard library imports --
 local floor = math.floor
-local remove = table.remove
-local sqrt = math.sqrt
 
 -- Modules --
+local householder = require("linear_algebra_ops.householder")
+local matrix_cache = require("linear_algebra_ops.matrix_cache")
 local matrix_mn = require("numeric_types.matrix_mn")
 
 -- Imports --
@@ -48,22 +48,6 @@ local _ThinQR_HouseholderColumns_
 
 -- Exports --
 local M = {}
-
--- --
-local Cache = {}
-
---
-local function GetMatrix ()
-	return remove(Cache) or matrix_mn.New(1, 1)
-end
-
---
-local function Recache (a, b, c, d)
-	Cache[#Cache + 1] = a
-	Cache[#Cache + 1] = b
-	Cache[#Cache + 1] = c
-	Cache[#Cache + 1] = d
-end
 
 --
 local function AuxBlockQR (A, col, n, nb, out)
@@ -102,49 +86,6 @@ end
 -- @tparam[opt=A] MatrixMN out
 function M.BlockQR (A, nb, out)
 	AuxBlockQR(A, 1, A:GetColumnCount(), nb, AuxOut(A, out))
-end
-
---
-local function House (x, v)
-	--
-	local sigma, n = 0, x:GetRowCount()
-
-	matrix_mn.Resize(v, 1, n)
-
-	for i = 2, n do
-		sigma = sigma + x(i, 1)^2
-	end
-
-	--
-	local x1, beta = x(1, 1)
-
-	v:Set(1, 1, 1)
-
-	if sigma == 0 then
-		beta = x1 >= 0 and 0 or -2
-
-		for i = 2, n do
-			v:Set(1, i, 0)
-		end
-	else
-		local mu, v1 = sqrt(x1^2 + sigma)
-
-		if x1 <= 0 then
-			v1 = x1 - mu
-		else
-			v1 = -sigma / (x1 + mu)
-		end
-
-		local v1sq = v1^2
-
-		beta = 2 * v1sq / (sigma + v1sq)
-
-		for i = 2, n do
-			v:Set(1, i, x(i, 1) / v1)
-		end
-	end
-
-	return beta
 end
 
 --- DOCME
@@ -229,7 +170,7 @@ function M.Multiply_TranposeHouseholder (H, C, out)
 	out = AuxOut(C, out)
 
 	--
-	local corner, vc, v, op = GetMatrix(), GetMatrix(), GetMatrix(), GetMatrix()
+	local corner, vc, v, op = matrix_cache.GetMatrix_N(4)
 
 	ColumnOpts.out, ColumnOpts.to = v, 2
 
@@ -254,7 +195,7 @@ function M.Multiply_TranposeHouseholder (H, C, out)
 		C = out
 	end
 
-	Recache(corner, vc, v, op)
+	matrix_cache.Recache(corner, vc, v, op)
 
 	ColumnOpts.out = nil
 end
@@ -276,13 +217,10 @@ local R = matrix_mn.Zero(nrows, ncols)
 M.Find_MGS(A, Q, R, ncols)
 -- /TODO
 
-	local qt, bm = GetMatrix(), GetMatrix()
+	local qt, bm = matrix_cache.GetMatrix_N(2)
 
-	B = Mul(Transpose(Q, qt), B, bm)
-
-	matrix_mn.BackSubstitute(R, B, X)
-
-	Recache(qt, bm)
+	matrix_mn.BackSubstitute(R, Mul(Transpose(Q, qt), B, bm), X)
+	matrix_cache.Recache(qt, bm)
 end
 
 --- DOCME
@@ -294,8 +232,7 @@ function M.ThinQR_HouseholderColumns (A, col, n, out)
 	out = AuxOut(A, out)
 
 	--
-	local corner, vc, h, op = GetMatrix(), GetMatrix(), GetMatrix(), GetMatrix()
-	local v, sv = GetMatrix(), GetMatrix()
+	local corner, vc, h, op, v, sv = matrix_cache.GetMatrix_N(6)
 
 	ColumnOpts.out, ColumnOpts.to = h
 
@@ -310,7 +247,7 @@ function M.ThinQR_HouseholderColumns (A, col, n, out)
 
 		A:GetColumn(ci, ColumnOpts)
 
-		local beta = House(h, v)
+		local beta = householder.GetVector(h, v)
 
 		--
 		Corner(A, ci, j, corner)
@@ -330,8 +267,7 @@ function M.ThinQR_HouseholderColumns (A, col, n, out)
 		A = out
 	end
 
-	Recache(corner, vc, h, op)
-	Recache(v, sv)
+	matrix_cache.Recache(corner, vc, h, op, v, sv)
 
 	ColumnOpts.out = nil
 end
